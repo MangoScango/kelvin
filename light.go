@@ -40,6 +40,7 @@ type Light struct {
 	Configuration    *Configuration `json:"-"`
 	Schedule         Schedule       `json:"-"`
 	Interval         Interval       `json:"interval"`
+	LastLightState   LightState     `json:"lastLightState,omitempty"`
 }
 
 const lightUpdateIntervalInSeconds = 1
@@ -110,10 +111,15 @@ func (light *Light) update() error {
 	// Refresh current light state from bridge
 	light.updateCurrentLightState()
 
-	// If the light is not reachable anymore clean up
-	if !light.Reachable {
+	// If the light is not on/reachable anymore clean up
+	if !light.On || !light.Reachable {
 		if light.Tracking {
 			log.Printf("💡 Light %s - Light is no longer reachable. Clearing state...", light.Name)
+			if light.Automatic {
+				light.LastLightState.Brightness, _ = light.HueLight.getCurrentBrightness()
+				light.LastLightState.ColorTemperature, _ = light.HueLight.getCurrentColorTemperature()
+				log.Printf("💡 Light %s - Saved state - %dK @ %d%% ", light.Name, light.LastLightState.ColorTemperature, light.LastLightState.Brightness)
+			}
 			light.Tracking = false
 			light.Automatic = false
 			return nil
@@ -122,20 +128,6 @@ func (light *Light) update() error {
 		// Ignore light because we are not tracking it.
 		return nil
 	}
-
-	// If the light was turned off clean up
-	if !light.On {
-		if light.Tracking {
-			log.Printf("💡 Light %s - Light was turned off. Clearing state...", light.Name)
-			light.Tracking = false
-			light.Automatic = false
-			return nil
-		}
-
-		// Ignore light because we are not tracking it.
-		return nil
-	}
-
 	// Did the light just appear?
 	if !light.Tracking {
 		log.Printf("💡 Light %s - Light just appeared.", light.Name)
@@ -168,8 +160,10 @@ func (light *Light) update() error {
 			return nil
 		}
 
-		// if status == scene state --> Activate Kelvin
-		if light.HueLight.hasState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness) {
+		// if status == scene state OR status == last scene state--> Activate Kelvin
+		if light.HueLight.hasState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness) ||
+			light.HueLight.hasState(light.LastLightState.ColorTemperature, light.LastLightState.Brightness) {
+
 			log.Printf("💡 Light %s - Detected matching target state. Activating Kelvin...", light.Name)
 			light.Automatic = true
 
