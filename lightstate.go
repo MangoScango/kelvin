@@ -35,13 +35,15 @@ func (lightstate *LightState) isValid() bool {
 	// Validate Brightness
 	if lightstate.Brightness != 0 && lightstate.Brightness != -1 && (lightstate.Brightness < 0 || lightstate.Brightness > 100) {
 		log.Warningf("Validation: Invalid Brightness in %+v", lightstate)
-		valid = false
+		lightstate.Brightness = -1
+		valid = true
 	}
 
 	// Validate ColorTemperature
 	if lightstate.ColorTemperature != 0 && lightstate.ColorTemperature != -1 && (lightstate.ColorTemperature < 2000 || lightstate.ColorTemperature > 6500) {
 		log.Warningf("Validation: Invalid ColorTemperature in %+v", lightstate)
-		valid = false
+		lightstate.ColorTemperature = -1
+		valid = true
 	}
 
 	return valid

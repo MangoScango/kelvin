@@ -22,7 +22,7 @@
 package main
 
 import log "github.com/Sirupsen/logrus"
-import "github.com/stefanwichmann/go.hue"
+import hue "github.com/stefanwichmann/go.hue"
 import "time"
 import "strings"
 
@@ -81,7 +81,10 @@ func updateSceneForSchedule(scene *hue.Scene, lightSchedule LightSchedule) {
 	}
 
 	state := interval.calculateLightStateInInterval(time.Now())
-
+	if !state.isValid() {
+		log.Warningf("Scene state invalid, skipping update")
+		return
+	}
 	var modifyState hue.ModifyLightState
 	modifyState.On = true // turn lights on when the scene is activated
 
