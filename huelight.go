@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2018 Stefan Wichmann
+// Copyright (c) 2019 Stefan Wichmann
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,9 +22,9 @@
 package main
 
 import log "github.com/Sirupsen/logrus"
-import "github.com/stefanwichmann/go.hue"
+import hue "github.com/stefanwichmann/go.hue"
 import "strconv"
-import "time"
+
 import "errors"
 
 var lightsSupportingDimming = []string{"Dimmable Light", "Color Temperature Light", "Color Light", "Extended Color Light"}
@@ -52,14 +52,7 @@ type HueLight struct {
 	MinimumColorTemperature  int
 }
 
-const lightTransitionIntervalInSeconds = 1
-
-func (light *HueLight) initialize() error {
-	attr, err := light.HueLight.GetLightAttributes()
-	if err != nil {
-		return err
-	}
-
+func (light *HueLight) initialize(attr hue.LightAttributes) {
 	// initialize non changing values
 	light.Name = attr.Name
 	light.Dimmable = containsString(lightsSupportingDimming, attr.Type)
@@ -77,8 +70,7 @@ func (light *HueLight) initialize() error {
 
 	log.Debugf("💡 Light %s - Initialization complete. Identified as %s (ModelID: %s, Version: %s)", light.Name, attr.Type, attr.ModelId, attr.SoftwareVersion)
 
-	light.updateCurrentLightState()
-	return nil
+	light.updateCurrentLightState(attr)
 }
 
 func (light *HueLight) supportsColorTemperature() bool {
@@ -95,12 +87,7 @@ func (light *HueLight) supportsBrightness() bool {
 	return false
 }
 
-func (light *HueLight) updateCurrentLightState() error {
-	attr, err := light.HueLight.GetLightAttributes()
-	if err != nil {
-		return err
-	}
-
+func (light *HueLight) updateCurrentLightState(attr hue.LightAttributes) {
 	light.CurrentColorTemperature = attr.State.Ct
 
 	var color []float32
@@ -118,8 +105,6 @@ func (light *HueLight) updateCurrentLightState() error {
 		light.Reachable = true
 		light.On = attr.State.On
 	}
-
-	return nil
 }
 
 func (light *HueLight) setLightState(colorTemperature int, brightness int) error {
@@ -135,7 +120,6 @@ func (light *HueLight) setLightState(colorTemperature int, brightness int) error
 		log.Debugf("💡 Light %s - Adjusted color temperature to light capability of %dK", light.Name, colorTemperature)
 	}
 
-	log.Debugf("💡 HueLight %s - Setting light state to %dK and %d%% brightness.", light.Name, colorTemperature, brightness)
 	light.SetColorTemperature = colorTemperature
 	light.SetBrightness = brightness
 
@@ -165,45 +149,34 @@ func (light *HueLight) setLightState(colorTemperature int, brightness int) error
 			hueLightState.Bri = strconv.Itoa(light.TargetBrightness)
 		}
 	}
-	hueLightState.TransitionTime = strconv.Itoa(lightTransitionIntervalInSeconds * 10) // Conversion to 100ms-value
 
 	// Send new state to the light
-	_, err := light.HueLight.SetState(hueLightState)
+	log.Debugf("💡 HueLight %s - Setting light state to %dK and %d%% brightness (TargetColorTemperature: %d, CurrentColorTemperature: %d, TargetColor: %v, CurrentColor: %v, TargetBrightness: %d, CurrentBrightness: %d)", light.Name, colorTemperature, brightness, light.TargetColorTemperature, light.CurrentColorTemperature, light.TargetColor, light.CurrentColor, light.TargetBrightness, light.CurrentBrightness)
+	result, err := light.HueLight.SetState(hueLightState)
 	if err != nil {
+		log.Warningf("💡 HueLight %s - Setting light state failed: %v (Result: %v)", light.Name, err, result)
 		return err
 	}
 
-	// Wait while the light is in transition before returning
-	time.Sleep(lightTransitionIntervalInSeconds + 1*time.Second)
-
-	// Debug: Update current state to double check
-	if log.GetLevel() == log.DebugLevel {
-		light.updateCurrentLightState()
-		if light.hasChanged() {
-			log.Warningf("💡 HueLight %s - Failed to update light state: %+v", light.Name, light)
-		} else {
-			log.Debugf("💡 HueLight %s - Light was successfully updated.", light.Name)
-		}
-	}
-
+	log.Debugf("💡 HueLight %s - Light was successfully updated (TargetColorTemperature: %d, CurrentColorTemperature: %d, TargetColor: %v, CurrentColor: %v, TargetBrightness: %d, CurrentBrightness: %d)", light.Name, light.TargetColorTemperature, light.CurrentColorTemperature, light.TargetColor, light.CurrentColor, light.TargetBrightness, light.CurrentBrightness)
 	return nil
 }
 
 func (light *HueLight) hasChanged() bool {
 	if light.SupportsXYColor && light.CurrentColorMode == "xy" {
 		if !equalsFloat(light.TargetColor, []float32{-1, -1}, 0) && !equalsFloat(light.TargetColor, light.CurrentColor, 0.001) {
-			log.Debugf("💡 HueLight %s - Color has changed! Current light state: %+v", light.Name, light)
+			log.Debugf("💡 HueLight %s - Color has changed! CurrentColor: %v, TargetColor: %v (%dK)", light.Name, light.CurrentColor, light.TargetColor, light.SetColorTemperature)
 			return true
 		}
 	} else if light.SupportsColorTemperature && light.CurrentColorMode == "ct" {
 		if light.TargetColorTemperature != -1 && !equalsInt(light.TargetColorTemperature, light.CurrentColorTemperature, 2) {
-			log.Debugf("💡 HueLight %s - Color temperature has changed! Current light state: %+v", light.Name, light)
+			log.Debugf("💡 HueLight %s - Color temperature has changed! CurrentColorTemperature: %d, TargetColorTemperatur: %d (%dK)", light.Name, light.CurrentColorTemperature, light.TargetColorTemperature, light.SetColorTemperature)
 			return true
 		}
 	}
 
 	if light.Dimmable && light.TargetBrightness != -1 && !equalsInt(light.TargetBrightness, light.CurrentBrightness, 2) {
-		log.Debugf("💡 HueLight %s - Brightness has changed! Current light state: %+v", light.Name, light)
+		log.Debugf("💡 HueLight %s - Brightness has changed! CurrentBrightness: %d, TargetBrightness: %d (%d%%)", light.Name, light.CurrentBrightness, light.TargetBrightness, light.SetBrightness)
 		return true
 	}
 

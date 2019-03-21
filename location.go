@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2018 Stefan Wichmann
+// Copyright (c) 2019 Stefan Wichmann
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -21,35 +21,34 @@
 // SOFTWARE.
 package main
 
-import "net/http"
-import "io/ioutil"
-import "encoding/json"
-import log "github.com/Sirupsen/logrus"
-import "github.com/btittelbach/astrotime"
-import "time"
+import (
+	"encoding/json"
+	"io/ioutil"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"time"
+
+	log "github.com/Sirupsen/logrus"
+	"github.com/btittelbach/astrotime"
+)
 
 // Geolocation represents a position on earth for which we can
 // calculate sunrise and sunset times.
 // If no location is configured Kelvin will try a geo IP lookup.
 type Geolocation struct {
-	City      string
 	Latitude  float64
 	Longitude float64
 }
 
 // GeoAPIResponse respresents the result of a request to geolocationAPIURL.
 type GeoAPIResponse struct {
-	City     string                 `json:"city"`
-	Location GeoAPILocationResponse `json:"location"`
+	Location string `json:"loc"`
+	City     string `json:"city"`
 }
 
-// GeoAPILocationResponse respresents the actual coordinates inside a GeoAPIResponse.
-type GeoAPILocationResponse struct {
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-}
-
-const geolocationAPIURL = "https://geoip.nekudo.com/api/"
+const geolocationAPIURL = "https://ipinfo.io/json"
 
 // InitializeLocation creates and return a geolocation for the current system.
 func InitializeLocation(configuration *Configuration) (Geolocation, error) {
@@ -90,9 +89,16 @@ func (location *Geolocation) updateByIP() error {
 		return err
 	}
 
-	log.Printf("🌍 Detected location: %s (%v, %v).", data.City, data.Location.Latitude, data.Location.Longitude)
-	location.Latitude = data.Location.Latitude
-	location.Longitude = data.Location.Longitude
+	tokens := strings.Split(data.Location, ",")
+	if len(data.Location) == 0 || len(tokens) != 2 {
+		log.Warningf("🌍 Detection of geolocation seems to have failed... Please configure manually")
+		return nil
+	}
+
+	location.Latitude, _ = strconv.ParseFloat(tokens[0], 32)
+	location.Longitude, _ = strconv.ParseFloat(tokens[1], 32)
+	log.Printf("🌍 Detected geolocation: %s (%.4f, %.4f)", data.City, location.Latitude, location.Longitude)
+
 	return nil
 }
 
@@ -103,7 +109,7 @@ func CalculateSunset(date time.Time, latitude float64, longitude float64) time.T
 	yr, mth, day := date.Date()
 	startOfDay := time.Date(yr, mth, day, 0, 0, 0, 0, date.Location())
 
-	return astrotime.NextSunset(startOfDay, latitude, longitude)
+	return astrotime.CalcDusk(startOfDay, latitude, longitude, astrotime.GOLDEN_HOUR)
 }
 
 // CalculateSunrise calculates the sunrise for the given day based on
@@ -113,5 +119,5 @@ func CalculateSunrise(date time.Time, latitude float64, longitude float64) time.
 	yr, mth, day := date.Date()
 	startOfDay := time.Date(yr, mth, day, 0, 0, 0, 0, date.Location())
 
-	return astrotime.NextSunrise(startOfDay, latitude, longitude)
+	return astrotime.CalcDawn(startOfDay, latitude, longitude, astrotime.GOLDEN_HOUR)
 }

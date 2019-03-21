@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2018 Stefan Wichmann
+// Copyright (c) 2019 Stefan Wichmann
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -21,12 +21,15 @@
 // SOFTWARE.
 package main
 
-import log "github.com/Sirupsen/logrus"
-import "os/signal"
-import "syscall"
-import "os"
-import "runtime"
-import "flag"
+import (
+	"flag"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	log "github.com/Sirupsen/logrus"
+)
 
 var applicationVersion = "development"
 var debug = flag.Bool("debug", false, "Enable debug logging")
@@ -39,65 +42,152 @@ var configuration *Configuration
 var bridge = &HueBridge{}
 var lights []*Light
 
+const lightUpdateInterval = 1 * time.Second
+const stateUpdateInterval = 1 * time.Minute
+const timeBetweenCalls = 200 * time.Millisecond // see https://developers.meethue.com/develop/application-design-guidance/hue-system-performance/
+
 func main() {
 	flag.Parse()
 	configureLogging()
-	log.Printf("Kelvin %v starting up... 🚀", applicationVersion)
-	log.Debugf("Current working directory: %v", workingDirectory())
+	log.Printf("🤖 Kelvin %v starting up... 🚀", applicationVersion)
+	log.Debugf("🤖 Current working directory: %v", workingDirectory())
 	go CheckForUpdate(applicationVersion, *forceUpdate)
 	go validateSystemTime()
 	go handleSIGHUP()
 
-	// load configuration or create a new one
+	// Load configuration or create a new one
 	conf, err := InitializeConfiguration(*configurationFile, *enableWebInterface)
 	if err != nil {
 		log.Fatal(err)
 	}
 	configuration = &conf
 
-	// start interface
+	// Start web interface
 	go startInterface()
 
-	// find bridge
+	// Find Hue bridge
 	err = bridge.InitializeBridge(configuration)
 	if err != nil {
 		log.Warning(err)
 	}
 
-	// find location
+	// Find geo location
 	_, err = InitializeLocation(configuration)
 	if err != nil {
 		log.Warning(err)
 	}
 
-	// save configuration
+	// Save configuration
 	err = configuration.Write()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// start routine for the scenes
-	go updateScenesCyclic()
-
-	// start routine for every light
-	lights, err = bridge.Lights()
+	// Initialize lights
+	l, err := bridge.Lights()
 	if err != nil {
 		log.Warning(err)
 	}
-
-	for _, light := range lights {
+	time.Sleep(timeBetweenCalls)
+	printDevices(l)
+	for _, light := range l {
 		light := light
-		go light.updateCyclic(configuration)
+
+		// Filter devices we can't control
+		if !light.HueLight.supportsColorTemperature() && !light.HueLight.supportsBrightness() {
+			log.Printf("🤖 Light %s - This device doesn't support any functionality Kelvin uses. Ignoring...", light.Name)
+		} else {
+			lights = append(lights, light)
+			updateScheduleForLight(light)
+		}
 	}
-	runtime.Goexit()
-	log.Debugf("All routines ended...")
+
+	// Initialize scenes
+	updateScenes()
+	time.Sleep(timeBetweenCalls)
+
+	// Start cyclic update for all lights and scenes
+	log.Debugf("🤖 Starting cyclic update...")
+	lightUpdateTimer := time.NewTimer(lightUpdateInterval)
+	stateUpdateTick := time.Tick(stateUpdateInterval)
+	newDayTimer := time.After(durationUntilNextDay())
+	for {
+		select {
+		case <-newDayTimer:
+			// A new day has begun, calculate new schedule
+			log.Printf("🤖 Calculating schedule for %v", time.Now().Format("Jan 2 2006"))
+			for _, light := range lights {
+				light := light
+				updateScheduleForLight(light)
+			}
+			newDayTimer = time.After(durationUntilNextDay())
+		case <-stateUpdateTick:
+			// update interval and color every minute
+			for _, light := range lights {
+				light := light
+				light.updateInterval()
+				light.updateTargetLightState()
+			}
+			// update scenes
+			updateScenes()
+			time.Sleep(timeBetweenCalls)
+		case <-lightUpdateTimer.C:
+			states, err := bridge.LightStates()
+			if err != nil {
+				log.Warningf("🤖 Failed to update light states: %v", err)
+			}
+			time.Sleep(timeBetweenCalls)
+
+			for _, light := range lights {
+				light := light
+				currentLightState, found := states[light.ID]
+				if found {
+					light.updateCurrentLightState(currentLightState)
+					updated, err := light.update()
+					if err != nil {
+						log.Warningf("🤖 Light %s - Failed to update light: %v", light.Name, err)
+					}
+					if updated {
+						log.Debugf("🤖 Light %s - Updated light state. Awaiting transition...", light.Name)
+						time.Sleep(timeBetweenCalls)
+						updated = false
+					}
+				} else {
+					log.Warningf("🤖 Light %s - No current light state found", light.Name)
+				}
+			}
+
+			lightUpdateTimer.Reset(lightUpdateInterval)
+		}
+	}
+}
+
+func updateScheduleForLight(light *Light) {
+	schedule, err := configuration.lightScheduleForDay(light.ID, time.Now())
+	if err != nil {
+		log.Printf("🤖 Light %s - Light is not associated to any schedule. Ignoring...", light.Name)
+		light.Schedule = schedule // Assign empty schedule
+		light.Scheduled = false
+	} else {
+		light.updateSchedule(schedule)
+		light.updateInterval()
+		light.updateTargetLightState()
+	}
+}
+
+func printDevices(l []*Light) {
+	log.Printf("🤖 Devices found on current bridge:")
+	log.Printf("| %-32s | %3v | %-5v | %-8v | %-11v | %-5v |", "Name", "ID", "On", "Dimmable", "Temperature", "Color")
+	for _, light := range l {
+		log.Printf("| %-32s | %3v | %-5v | %-8v | %-11v | %-5v |", light.Name, light.ID, light.On, light.HueLight.Dimmable, light.HueLight.SupportsColorTemperature, light.HueLight.SupportsXYColor)
+	}
 }
 
 func handleSIGHUP() {
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
 	<-sighup // wait for signal
-	log.Printf("Received signal SIGHUP. Restarting...")
+	log.Printf("🤖 Received signal SIGHUP. Restarting...")
 	Restart()
 }
 
@@ -114,7 +204,7 @@ func configureLogging() {
 		if err == nil {
 			log.SetOutput(file)
 		} else {
-			log.Info("Failed to log to file, using default stderr")
+			log.Info("🤖 Failed to log to file, using default stderr")
 		}
 	}
 }
@@ -123,11 +213,11 @@ func validateSystemTime() {
 	// validate local clock as it forms the basis for all time calculations.
 	valid, err := IsLocalTimeValid()
 	if err != nil {
-		log.Fatal(err)
+		log.Errorf("🤖 ERROR: Could not validate system time: %v", err)
 	}
 	if !valid {
-		log.Warningf("WARNING: Your local system time seems to be more than one minute off. Timings may be inaccurate.")
+		log.Warningf("🤖 WARNING: Your local system time seems to be more than one minute off. Timings may be inaccurate.")
 	} else {
-		log.Debugf("Local system time validated.")
+		log.Debugf("🤖 Local system time validated.")
 	}
 }

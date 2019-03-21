@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2018 Stefan Wichmann
+// Copyright (c) 2019 Stefan Wichmann
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -21,12 +21,15 @@
 // SOFTWARE.
 package main
 
-import "strings"
-import "os/exec"
-import "os"
-import "fmt"
-import "math"
-import "path/filepath"
+import (
+	"fmt"
+	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 func containsString(slice []string, element string) bool {
 	for _, current := range slice {
@@ -71,7 +74,8 @@ func equalsFloat(a []float32, b []float32, maxDiff float32) bool {
 		return false
 	}
 	for index := 0; index < len(a); index++ {
-		if math.Abs(float64(a[index]-b[index])) > float64(maxDiff) {
+		rounded := float32(math.Round(math.Abs(float64(a[index]-b[index]))/float64(maxDiff))) * maxDiff
+		if rounded > maxDiff {
 			return false
 		}
 	}
@@ -118,4 +122,11 @@ func absolutePath(filename string) string {
 		return filename
 	}
 	return abs
+}
+
+func durationUntilNextDay() time.Duration {
+	now := time.Now()
+	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 1, now.Location())
+	endOfDay = endOfDay.Add(1 * time.Second)
+	return time.Until(endOfDay)
 }

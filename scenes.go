@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2018 Stefan Wichmann
+// Copyright (c) 2019 Stefan Wichmann
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -26,26 +26,14 @@ import hue "github.com/stefanwichmann/go.hue"
 import "time"
 import "strings"
 
-const sceneUpdateIntervalInSeconds = 60
-
-func updateScenesCyclic() {
-	updateScenes()
-
-	// Start cyclic update
-	log.Debugf("Scenes - Starting cyclic update...")
-	sceneUpdateTick := time.NewTicker(sceneUpdateIntervalInSeconds * time.Second)
-	for range sceneUpdateTick.C {
-		log.Debugf("Scenes - Updating scenes...")
-		updateScenes()
-	}
-}
-
 func updateScenes() {
+	log.Debugf("🎨 Updating scenes...")
 	scenes, _ := bridge.bridge.AllScenes()
 	for _, scene := range scenes {
 		if strings.Contains(strings.ToLower(scene.Name), "kelvin") {
 			for _, schedule := range configuration.Schedules {
 				if strings.Contains(strings.ToLower(scene.Name), strings.ToLower(schedule.Name)) {
+					log.Debugf("🎨 Updating scene \"%s\" for schedule \"%s\"...", scene.Name, schedule.Name)
 					updateSceneForSchedule(scene, schedule)
 				}
 			}
@@ -54,15 +42,13 @@ func updateScenes() {
 }
 
 func updateSceneForSchedule(scene *hue.Scene, lightSchedule LightSchedule) {
-	log.Debugf("Scenes - Updating scene %s...", scene.Name)
-
 	// Updating lights
 	var modifyScene hue.ModifyScene
 	modifyScene.Lights = toStringArray(lightSchedule.AssociatedDeviceIDs)
 
 	_, err := scene.Modify(modifyScene)
 	if err != nil {
-		log.Warningf("%v", err)
+		log.Warningf("🎨 %v", err)
 		return
 	}
 
@@ -70,13 +56,13 @@ func updateSceneForSchedule(scene *hue.Scene, lightSchedule LightSchedule) {
 	light := lightSchedule.AssociatedDeviceIDs[0]
 	schedule, err := configuration.lightScheduleForDay(light, time.Now())
 	if err != nil {
-		log.Warningf("%v", err)
+		log.Warningf("🎨 %v", err)
 		return
 	}
 
 	interval, err := schedule.currentInterval(time.Now())
 	if err != nil {
-		log.Warningf("%v", err)
+		log.Warningf("🎨 %v", err)
 		return
 	}
 
@@ -96,10 +82,10 @@ func updateSceneForSchedule(scene *hue.Scene, lightSchedule LightSchedule) {
 		modifyState.Brightness = uint8(mapBrightness(state.Brightness))
 	}
 
-	result, err := scene.ModifyLightStates(modifyState)
+	_, err = scene.ModifyLightStates(modifyState)
 	if err != nil {
-		log.Warningf("%v", err)
+		log.Warningf("🎨 %v", err)
 	}
 
-	log.Debugf("Scenes - Successfully updated scene %s to %+v. Result: %+v", scene.Name, modifyState, result)
+	log.Debugf("🎨 Successfully updated scene \"%s\"", scene.Name)
 }
