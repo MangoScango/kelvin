@@ -22,8 +22,9 @@
 package main
 
 import (
-	log "github.com/Sirupsen/logrus"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
 )
 
 // Light represents a light kelvin can automate in your system.
@@ -250,6 +251,11 @@ func (light *Light) updateTargetLightState() {
 	// Calculate the target lightstate from the interval
 	newLightState := light.Interval.calculateLightStateInInterval(time.Now())
 	log.Debugf("💡 Light %s - The calculated lightstate for the interval %v - %v is %+v", light.Name, light.Interval.Start.Time.Format("15:04"), light.Interval.End.Time.Format("15:04"), newLightState)
+
+	if !newLightState.isValid() {
+		log.Warningf("Light State invalid, skipping update")
+		return
+	}
 
 	// First initialization of the TargetLightState?
 	if light.TargetLightState.ColorTemperature == 0 && light.TargetLightState.Brightness == 0 {
