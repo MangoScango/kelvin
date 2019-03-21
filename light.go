@@ -42,7 +42,7 @@ type Light struct {
 	Schedule         Schedule   `json:"-"`
 	Interval         Interval   `json:"interval"`
 	Appearance       time.Time  `json:"-"`
-	LastLightState   LightState     `json:"lastLightState,omitempty"`
+	LastLightState   LightState `json:"lastLightState,omitempty"`
 }
 
 func (light *Light) updateCurrentLightState(attr hue.LightAttributes) error {
@@ -57,9 +57,6 @@ func (light *Light) update() (bool, error) {
 	if !light.Scheduled {
 		return false, nil
 	}
-
-	// Refresh current light state from bridge
-	light.updateCurrentLightState()
 
 	// If the light is not on/reachable anymore clean up
 	if !light.On || !light.Reachable {
