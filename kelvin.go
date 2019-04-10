@@ -23,6 +23,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -45,6 +46,7 @@ var lights []*Light
 const lightUpdateInterval = 1 * time.Second
 const stateUpdateInterval = 1 * time.Minute
 const timeBetweenCalls = 200 * time.Millisecond // see https://developers.meethue.com/develop/application-design-guidance/hue-system-performance/
+const lightTransistionTime = 400 * time.Millisecond
 
 func main() {
 	flag.Parse()
@@ -66,9 +68,15 @@ func main() {
 	go startInterface()
 
 	// Find Hue bridge
-	err = bridge.InitializeBridge(configuration)
-	if err != nil {
-		log.Warning(err)
+	log.Printf("🤖 Initializing bridge connection...")
+	for {
+		err = bridge.InitializeBridge(configuration)
+		if err != nil {
+			log.Errorf("Could not initialze bridge: %v - Retrying...", err)
+			time.Sleep(10 * time.Second)
+		} else {
+			break
+		}
 	}
 
 	// Find geo location
@@ -120,17 +128,24 @@ func main() {
 				light := light
 				updateScheduleForLight(light)
 			}
+			updateScenes()
+			time.Sleep(timeBetweenCalls)
 			newDayTimer = time.After(durationUntilNextDay())
 		case <-stateUpdateTick:
 			// update interval and color every minute
+			updated := false
 			for _, light := range lights {
 				light := light
 				light.updateInterval()
-				light.updateTargetLightState()
+				if light.updateTargetLightState() {
+					updated = true
+				}
 			}
 			// update scenes
-			updateScenes()
-			time.Sleep(timeBetweenCalls)
+			if updated {
+				updateScenes()
+				time.Sleep(timeBetweenCalls)
+			}
 		case <-lightUpdateTimer.C:
 			states, err := bridge.LightStates()
 			if err != nil {
@@ -143,14 +158,13 @@ func main() {
 				currentLightState, found := states[light.ID]
 				if found {
 					light.updateCurrentLightState(currentLightState)
-					updated, err := light.update()
+					updated, err := light.update(lightTransistionTime)
 					if err != nil {
 						log.Warningf("🤖 Light %s - Failed to update light: %v", light.Name, err)
 					}
 					if updated {
 						log.Debugf("🤖 Light %s - Updated light state. Awaiting transition...", light.Name)
 						time.Sleep(timeBetweenCalls)
-						updated = false
 					}
 				} else {
 					log.Warningf("🤖 Light %s - No current light state found", light.Name)
@@ -170,16 +184,19 @@ func updateScheduleForLight(light *Light) {
 		light.Scheduled = false
 	} else {
 		light.updateSchedule(schedule)
-		light.updateInterval()
 		light.updateTargetLightState()
 	}
 }
 
 func printDevices(l []*Light) {
 	log.Printf("🤖 Devices found on current bridge:")
-	log.Printf("| %-32s | %3v | %-5v | %-8v | %-11v | %-5v |", "Name", "ID", "On", "Dimmable", "Temperature", "Color")
+	log.Printf("| %-32s | %3v | %-5v | %-8v | %-11v | %-5v | %17v |", "Name", "ID", "On", "Dimmable", "Temperature", "Color", "Temperature range")
 	for _, light := range l {
-		log.Printf("| %-32s | %3v | %-5v | %-8v | %-11v | %-5v |", light.Name, light.ID, light.On, light.HueLight.Dimmable, light.HueLight.SupportsColorTemperature, light.HueLight.SupportsXYColor)
+		ctRange := ""
+		if light.HueLight.supportsColorTemperature() {
+			ctRange = fmt.Sprintf("%dK - %dK", light.HueLight.MinimumColorTemperature, 6500)
+		}
+		log.Printf("| %-32s | %3v | %-5v | %-8v | %-11v | %-5v | %17v |", light.Name, light.ID, light.On, light.HueLight.Dimmable, light.HueLight.SupportsColorTemperature, light.HueLight.SupportsXYColor, ctRange)
 	}
 }
 

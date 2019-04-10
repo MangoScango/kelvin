@@ -21,15 +21,18 @@
 // SOFTWARE.
 package main
 
-import log "github.com/Sirupsen/logrus"
-import hue "github.com/stefanwichmann/go.hue"
-import "strconv"
+import (
+	"errors"
+	"strconv"
+	"time"
 
-import "errors"
+	log "github.com/Sirupsen/logrus"
+	hue "github.com/stefanwichmann/go.hue"
+)
 
-var lightsSupportingDimming = []string{"Dimmable Light", "Color Temperature Light", "Color Light", "Extended Color Light"}
-var lightsSupportingColorTemperature = []string{"Color Temperature Light", "Extended Color Light"}
-var lightsSupportingXYColor = []string{"Color Light", "Extended Color Light"}
+var lightsSupportingDimming = []string{"Dimmable light", "Color temperature light", "Color light", "Extended color light"}
+var lightsSupportingColorTemperature = []string{"Color temperature light", "Extended color light"}
+var lightsSupportingXYColor = []string{"Color light", "Extended color light"}
 
 // HueLight represents a physical hue light.
 type HueLight struct {
@@ -60,9 +63,11 @@ func (light *HueLight) initialize(attr hue.LightAttributes) {
 	light.SupportsXYColor = containsString(lightsSupportingXYColor, attr.Type)
 
 	// set minimum color temperature depending on type
-	if attr.Type == "Color Temperature Light" {
+	if attr.Type == "Color temperature light" {
 		light.MinimumColorTemperature = 2200
-	} else if light.SupportsXYColor || light.SupportsColorTemperature {
+	} else if light.SupportsXYColor {
+		light.MinimumColorTemperature = 1000
+	} else if light.SupportsColorTemperature {
 		light.MinimumColorTemperature = 2000
 	} else {
 		light.MinimumColorTemperature = 0
@@ -107,8 +112,8 @@ func (light *HueLight) updateCurrentLightState(attr hue.LightAttributes) {
 	}
 }
 
-func (light *HueLight) setLightState(colorTemperature int, brightness int) error {
-	if colorTemperature != -1 && (colorTemperature < 2000 || colorTemperature > 6500) {
+func (light *HueLight) setLightState(colorTemperature int, brightness int, transitionTime time.Duration) error {
+	if colorTemperature != -1 && (colorTemperature < 1000 || colorTemperature > 6500) {
 		log.Warningf("💡 Light %s - Invalid color temperature %d", light.Name, colorTemperature)
 	}
 	if brightness < -1 || brightness > 100 {
@@ -130,6 +135,7 @@ func (light *HueLight) setLightState(colorTemperature int, brightness int) error
 
 	// Send new state to light bulb
 	var hueLightState hue.SetLightState
+	hueLightState.TransitionTime = strconv.Itoa(int(transitionTime / time.Millisecond / 100))
 
 	if colorTemperature != -1 {
 		// Set supported colormodes. If both are, the brigde will prefer xy colors
@@ -151,14 +157,14 @@ func (light *HueLight) setLightState(colorTemperature int, brightness int) error
 	}
 
 	// Send new state to the light
-	log.Debugf("💡 HueLight %s - Setting light state to %dK and %d%% brightness (TargetColorTemperature: %d, CurrentColorTemperature: %d, TargetColor: %v, CurrentColor: %v, TargetBrightness: %d, CurrentBrightness: %d)", light.Name, colorTemperature, brightness, light.TargetColorTemperature, light.CurrentColorTemperature, light.TargetColor, light.CurrentColor, light.TargetBrightness, light.CurrentBrightness)
+	log.Debugf("💡 HueLight %s - Setting light state to %dK and %d%% brightness (TargetColorTemperature: %d, CurrentColorTemperature: %d, TargetColor: %v, CurrentColor: %v, TargetBrightness: %d, CurrentBrightness: %d, TransitionTime: %s)", light.Name, colorTemperature, brightness, light.TargetColorTemperature, light.CurrentColorTemperature, light.TargetColor, light.CurrentColor, light.TargetBrightness, light.CurrentBrightness, hueLightState.TransitionTime)
 	result, err := light.HueLight.SetState(hueLightState)
 	if err != nil {
 		log.Warningf("💡 HueLight %s - Setting light state failed: %v (Result: %v)", light.Name, err, result)
 		return err
 	}
 
-	log.Debugf("💡 HueLight %s - Light was successfully updated (TargetColorTemperature: %d, CurrentColorTemperature: %d, TargetColor: %v, CurrentColor: %v, TargetBrightness: %d, CurrentBrightness: %d)", light.Name, light.TargetColorTemperature, light.CurrentColorTemperature, light.TargetColor, light.CurrentColor, light.TargetBrightness, light.CurrentBrightness)
+	log.Debugf("💡 HueLight %s - Light was successfully updated (TargetColorTemperature: %d, CurrentColorTemperature: %d, TargetColor: %v, CurrentColor: %v, TargetBrightness: %d, CurrentBrightness: %d, TransitionTime: %s)", light.Name, light.TargetColorTemperature, light.CurrentColorTemperature, light.TargetColor, light.CurrentColor, light.TargetBrightness, light.CurrentBrightness, hueLightState.TransitionTime)
 	return nil
 }
 
@@ -262,8 +268,8 @@ func mapColorTemperature(colorTemperature int) int {
 
 	if colorTemperature > 6500 {
 		colorTemperature = 6500
-	} else if colorTemperature < 2000 {
-		colorTemperature = 2000
+	} else if colorTemperature < 1000 {
+		colorTemperature = 1000
 	}
 	return int((float64(1) / float64(colorTemperature)) * float64(1000000))
 }

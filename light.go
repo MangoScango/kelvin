@@ -28,6 +28,8 @@ import (
 	hue "github.com/stefanwichmann/go.hue"
 )
 
+const initializationDuration = 5 * time.Second
+
 // Light represents a light kelvin can automate in your system.
 type Light struct {
 	ID               int        `json:"id"`
@@ -39,6 +41,7 @@ type Light struct {
 	On               bool       `json:"on"`
 	Tracking         bool       `json:"-"`
 	Automatic        bool       `json:"automatic"`
+	Initializing     bool       `json:"-"`
 	Schedule         Schedule   `json:"-"`
 	Interval         Interval   `json:"interval"`
 	Appearance       time.Time  `json:"-"`
@@ -52,7 +55,7 @@ func (light *Light) updateCurrentLightState(attr hue.LightAttributes) error {
 	return nil
 }
 
-func (light *Light) update() (bool, error) {
+func (light *Light) update(transistionTime time.Duration) (bool, error) {
 	// Is the light associated to any schedule?
 	if !light.Scheduled {
 		return false, nil
@@ -69,6 +72,7 @@ func (light *Light) update() (bool, error) {
 			}
 			light.Tracking = false
 			light.Automatic = false
+			light.Initializing = false
 			return false, nil
 		}
 
@@ -85,13 +89,14 @@ func (light *Light) update() (bool, error) {
 		if light.Schedule.enableWhenLightsAppear {
 			log.Printf("💡 Light %s - Initializing state to %vK at %v%% brightness.", light.Name, light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness)
 
-			err := light.HueLight.setLightState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness)
+			err := light.HueLight.setLightState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness, transistionTime)
 			if err != nil {
 				log.Debugf("💡 Light %s - Could not initialize light after %v", light.Name, time.Since(light.Appearance))
 				return true, err
 			}
 
 			light.Automatic = true
+			light.Initializing = true
 			log.Debugf("💡 Light %s - Light was initialized to %vK at %v%% brightness", light.Name, light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness)
 			return true, nil
 		}
@@ -110,9 +115,10 @@ func (light *Light) update() (bool, error) {
 
 			log.Printf("💡 Light %s - Detected matching target state. Activating Kelvin...", light.Name)
 			light.Automatic = true
+			light.Initializing = true
 
 			// set correct target lightstate on HueLight
-			err := light.HueLight.setLightState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness)
+			err := light.HueLight.setLightState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness, transistionTime)
 			if err != nil {
 				return true, err
 			}
@@ -121,6 +127,28 @@ func (light *Light) update() (bool, error) {
 		}
 
 		// Light was changed manually and does not conform to scene detection
+		return false, nil
+	}
+
+	// Keep adjusting the light state for 10 seconds after the light appeared
+	if light.Initializing {
+		hasChanged := light.HueLight.hasChanged()
+
+		// Disable initialization phase if 10 seconds have passed and the light state has been adopted
+		if time.Now().After(light.Appearance.Add(initializationDuration)) && !hasChanged {
+			log.Debugf("💡 Light %s - Ending initialization phase after %v", light.Name, time.Since(light.Appearance))
+			light.Initializing = false
+		}
+
+		if hasChanged {
+			err := light.HueLight.setLightState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness, transistionTime)
+			if err != nil {
+				return true, err
+			}
+			log.Debugf("💡 Light %s - Adjusting light state to %vK at %v%% brightness (Initialization)", light.Name, light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness)
+			return true, nil
+		}
+
 		return false, nil
 	}
 
@@ -141,7 +169,7 @@ func (light *Light) update() (bool, error) {
 	}
 
 	// Light is turned on and in automatic state. Set target lightstate.
-	err := light.HueLight.setLightState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness)
+	err := light.HueLight.setLightState(light.TargetLightState.ColorTemperature, light.TargetLightState.Brightness, transistionTime)
 	if err != nil {
 		return true, err
 	}
@@ -165,8 +193,7 @@ func (light *Light) updateInterval() {
 
 	newInterval, err := light.Schedule.currentInterval(time.Now())
 	if err != nil {
-		log.Printf("💡 Light %s - Light has no active interval. Ignoring...", light.Name)
-		light.Interval = newInterval // Assign empty interval
+		log.Warningf("💡 Light %s - Could not determine interval for current schedule: %v", light.Name, err)
 		return
 	}
 	if newInterval != light.Interval {
@@ -175,10 +202,10 @@ func (light *Light) updateInterval() {
 	}
 }
 
-func (light *Light) updateTargetLightState() {
+func (light *Light) updateTargetLightState() bool {
 	if !light.Scheduled {
 		log.Debugf("💡 Light %s - Light is not associated to any schedule. No target light state to update...", light.Name)
-		return
+		return false
 	}
 
 	// Calculate the target lightstate from the interval
@@ -186,7 +213,7 @@ func (light *Light) updateTargetLightState() {
 
 	// Did the target light state change?
 	if newLightState.equals(light.TargetLightState) {
-		return
+		return false
 	}
 
 	if !newLightState.isValid() {
@@ -202,4 +229,5 @@ func (light *Light) updateTargetLightState() {
 	}
 
 	light.TargetLightState = newLightState
+	return true
 }
